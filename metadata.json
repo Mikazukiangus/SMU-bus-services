@@ -1,0 +1,6 @@
+{
+  "name": "SG BusStop",
+  "description": "Quick Singapore bus stop code lookup, live arrival board, and commuter favorites.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
