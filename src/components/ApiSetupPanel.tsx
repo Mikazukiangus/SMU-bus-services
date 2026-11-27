@@ -1,7 +1,11 @@
-import React, { useState } from 'react';
-import { Check, Copy, Play, RotateCcw } from 'lucide-react';
+import React, { useCallback, useEffect, useState } from 'react';
+import { Play, RefreshCw, RotateCcw } from 'lucide-react';
 import { ApiConfig } from '../types/bus';
-import { fetchBusArrivals } from '../services/busApi';
+import {
+  ApiHealthStatus,
+  checkApiHealth,
+  fetchBusArrivals,
+} from '../services/busApi';
 
 interface ApiSetupPanelProps {
   config: ApiConfig;
@@ -9,30 +13,10 @@ interface ApiSetupPanelProps {
   onRefreshCurrentStop: () => void;
 }
 
-const EXPRESS_PROXY_SNIPPET = `// Example server-side proxy route for LTA DataMall BusArrival v3/v2
-// Store LTA_ACCOUNT_KEY in your server environment (.env) — never in client code.
-app.get('/api/bus-arrival', async (req, res) => {
-  const stopCode = String(req.query.BusStopCode || '').trim();
-  if (!/^\\d{5}$/.test(stopCode)) {
-    return res.status(400).json({ error: 'Invalid 5-digit BusStopCode' });
-  }
-
-  const upstream = await fetch(
-    \`https://datamall2.mytransport.sg/ltaodataservice/v3/BusArrival?BusStopCode=\${stopCode}\`,
-    {
-      headers: {
-        AccountKey: process.env.LTA_ACCOUNT_KEY,
-        accept: 'application/json',
-      },
-    }
-  );
-
-  const data = await upstream.json();
-  res.status(upstream.status).json(data);
-});`;
+const DEFAULT_ENDPOINT = '/api/busarrival?BusStopCode={code}';
 
 const REFRESH_OPTIONS = [
-  { label: '15s', value: 15 },
+  { label: '20s (LTA)', value: 20 },
   { label: '30s', value: 30 },
   { label: '60s', value: 60 },
   { label: 'Manual', value: 0 },
@@ -43,24 +27,52 @@ export function ApiSetupPanel({
   onUpdateConfig,
   onRefreshCurrentStop,
 }: ApiSetupPanelProps) {
-  const [endpointDraft, setEndpointDraft] = useState(config.endpointTemplate);
-  const [testCode, setTestCode] = useState('09048');
+  const [endpointDraft, setEndpointDraft] = useState(
+    config.endpointTemplate || DEFAULT_ENDPOINT,
+  );
+  const [testCode, setTestCode] = useState('04121');
+  const [testService, setTestService] = useState('');
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{
     ok: boolean;
     message: string;
   } | null>(null);
-  const [copied, setCopied] = useState(false);
+
+  const [health, setHealth] = useState<ApiHealthStatus | null>(null);
+  const [healthLoading, setHealthLoading] = useState(true);
+  const [healthError, setHealthError] = useState<string | null>(null);
+
+  const runHealthCheck = useCallback(async () => {
+    setHealthLoading(true);
+    setHealthError(null);
+    try {
+      const status = await checkApiHealth();
+      setHealth(status);
+    } catch (err) {
+      setHealth(null);
+      setHealthError(
+        err instanceof Error ? err.message : 'Unable to reach /api/health.',
+      );
+    } finally {
+      setHealthLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    runHealthCheck();
+  }, [runHealthCheck]);
 
   function handleSaveEndpoint(event: React.FormEvent) {
     event.preventDefault();
+    const cleaned = endpointDraft.trim() || DEFAULT_ENDPOINT;
+    setEndpointDraft(cleaned);
     onUpdateConfig({
       mode: 'custom',
-      endpointTemplate: endpointDraft.trim() || '/api/bus-arrival?BusStopCode={code}',
+      endpointTemplate: cleaned,
     });
     setTestResult({
       ok: true,
-      message: 'Custom proxy endpoint saved. Arrival board will now fetch from this URL.',
+      message: 'Live serverless endpoint enabled. Arrival board will now fetch from this route.',
     });
     onRefreshCurrentStop();
   }
@@ -69,47 +81,111 @@ export function ApiSetupPanel({
     setTesting(true);
     setTestResult(null);
     try {
-      const result = await fetchBusArrivals(testCode, {
-        ...config,
-        mode: 'custom',
-        endpointTemplate: endpointDraft.trim(),
-      });
+      const result = await fetchBusArrivals(
+        testCode,
+        {
+          ...config,
+          mode: 'custom',
+          endpointTemplate: endpointDraft.trim() || DEFAULT_ENDPOINT,
+        },
+        testService.trim() || undefined,
+      );
+      const filterSuffix = testService.trim()
+        ? ` (Service ${testService.trim()})`
+        : '';
       setTestResult({
         ok: true,
-        message: `Connected cleanly — received ${result.services.length} bus services for stop ${result.busStopCode}.`,
+        message: `Connected cleanly — received ${result.services.length} bus service(s) for stop ${result.busStopCode}${filterSuffix}.`,
       });
     } catch (err) {
       setTestResult({
         ok: false,
         message:
           err instanceof Error
-            ? `Connection failed: ${err.message}`
-            : 'Connection failed. Verify the endpoint URL and CORS headers.',
+            ? err.message
+            : 'Connection failed. Verify LTA_ACCOUNT_KEY and endpoint configuration.',
       });
     } finally {
       setTesting(false);
     }
   }
 
-  function handleCopySnippet() {
-    navigator.clipboard?.writeText(EXPRESS_PROXY_SNIPPET).then(() => {
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1800);
-    });
-  }
-
   return (
     <section className="rounded-2xl border border-slate-200 bg-white">
       <div className="border-b border-slate-200 p-5 sm:p-6">
         <h1 className="text-2xl font-bold tracking-tight text-slate-900">
-          LTA DataMall API Connection
+          LTA DataMall v3 API Connection
         </h1>
         <p className="mt-1 text-sm text-slate-500">
-          This app is pre-wired for the Singapore LTA DataMall BusArrival JSON contract. Keep using the built-in sample schedule now, or point it to your backend proxy when ready.
+          Root-level serverless routes at <code className="font-mono text-slate-700">/api/health</code> and{' '}
+          <code className="font-mono text-slate-700">/api/busarrival</code> proxy LTA DataMall v3 using your server-side{' '}
+          <code className="font-mono text-slate-700">LTA_ACCOUNT_KEY</code> environment variable.
         </p>
       </div>
 
       <div className="divide-y divide-slate-200">
+        {/* Serverless Health Check */}
+        <div className="p-5 sm:p-6">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="text-base font-semibold text-slate-900">
+                Serverless Endpoint Check
+              </h2>
+              <p className="mt-0.5 text-sm text-slate-500">
+                Verifies <code className="font-mono text-xs text-slate-700">GET /api/health</code> and checks whether{' '}
+                <code className="font-mono text-xs text-slate-700">LTA_ACCOUNT_KEY</code> is set on the server.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={runHealthCheck}
+              disabled={healthLoading}
+              className="inline-flex h-10 items-center justify-center gap-1.5 rounded-xl border border-slate-300 bg-white px-3.5 text-xs font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-60 transition-colors whitespace-nowrap self-start sm:self-auto"
+            >
+              <RefreshCw
+                className={`h-3.5 w-3.5 ${healthLoading ? 'animate-spin text-[#008348]' : 'text-slate-600'}`}
+                aria-hidden="true"
+              />
+              Check Health
+            </button>
+          </div>
+
+          <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50/70 p-4 text-sm">
+            {healthLoading && !health ? (
+              <p className="text-slate-500">Checking /api/health…</p>
+            ) : healthError ? (
+              <p className="font-medium text-red-700">{healthError}</p>
+            ) : health ? (
+              <dl className="grid grid-cols-1 gap-3 sm:grid-cols-3 text-xs">
+                <div>
+                  <dt className="text-slate-500">API Route</dt>
+                  <dd className="mt-0.5 font-semibold text-[#007A43]">
+                    Reachable ({health.endpoint})
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-slate-500">LTA_ACCOUNT_KEY</dt>
+                  <dd
+                    className={`mt-0.5 font-semibold ${
+                      health.ltaKeyConfigured ? 'text-[#007A43]' : 'text-amber-700'
+                    }`}
+                  >
+                    {health.ltaKeyConfigured
+                      ? 'Configured on server'
+                      : 'Not set yet (add to server env)'}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-slate-500">Upstream Cadence</dt>
+                  <dd className="mt-0.5 font-mono font-semibold text-slate-800 tabular-nums">
+                    Every {health.refreshIntervalSeconds}s
+                  </dd>
+                </div>
+              </dl>
+            ) : null}
+          </div>
+        </div>
+
         {/* Data Source Mode */}
         <div className="p-5 sm:p-6">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -118,7 +194,7 @@ export function ApiSetupPanel({
                 Active Data Source
               </h2>
               <p className="mt-0.5 text-sm text-slate-500">
-                Switch seamlessly between offline sample schedules and your live backend proxy.
+                Use offline sample timings until your key is added, then switch to Live LTA v3 API.
               </p>
             </div>
 
@@ -147,7 +223,7 @@ export function ApiSetupPanel({
                 onClick={() => {
                   onUpdateConfig({
                     mode: 'custom',
-                    endpointTemplate: endpointDraft.trim() || config.endpointTemplate,
+                    endpointTemplate: endpointDraft.trim() || DEFAULT_ENDPOINT,
                   });
                   onRefreshCurrentStop();
                 }}
@@ -157,7 +233,7 @@ export function ApiSetupPanel({
                     : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
-                Custom Proxy URL
+                Live LTA v3 API
               </button>
             </div>
           </div>
@@ -169,7 +245,7 @@ export function ApiSetupPanel({
                 Auto-Refresh Interval
               </h3>
               <p className="text-xs text-slate-500">
-                Automatically poll updated arrival timings while viewing a stop.
+                LTA DataMall v3 updates arrival timings every 20 seconds.
               </p>
             </div>
             <div className="inline-flex items-center gap-1 self-start rounded-lg bg-slate-100 p-1 sm:self-auto">
@@ -191,24 +267,25 @@ export function ApiSetupPanel({
           </div>
         </div>
 
-        {/* Custom Proxy Endpoint Form */}
+        {/* Serverless Endpoint & Live Test */}
         <form onSubmit={handleSaveEndpoint} className="space-y-4 p-5 sm:p-6">
           <div>
             <label
               htmlFor="endpoint-template-input"
               className="block text-sm font-semibold text-slate-900"
             >
-              Backend Proxy Endpoint Template
+              Serverless Bus Arrival Endpoint
             </label>
             <p className="mt-0.5 text-xs text-slate-500">
-              Include <code className="font-mono text-slate-700">{'{code}'}</code> where the 5-digit bus stop code should be substituted. Keep your LTA DataMall AccountKey strictly on your backend server.
+              Defaults to <code className="font-mono text-slate-700">{DEFAULT_ENDPOINT}</code>. Supports optional{' '}
+              <code className="font-mono text-slate-700">&amp;ServiceNo=7</code> filtering.
             </p>
             <input
               id="endpoint-template-input"
               type="text"
               value={endpointDraft}
               onChange={(e) => setEndpointDraft(e.target.value)}
-              placeholder="/api/bus-arrival?BusStopCode={code}"
+              placeholder={DEFAULT_ENDPOINT}
               className="mt-2.5 h-11 w-full rounded-xl border border-slate-300 bg-white px-3.5 font-mono text-sm text-slate-900 focus:border-[#008348] focus:outline-none focus:ring-2 focus:ring-[#008348]/20"
             />
           </div>
@@ -218,16 +295,29 @@ export function ApiSetupPanel({
               type="submit"
               className="inline-flex h-11 items-center justify-center rounded-xl bg-[#008348] px-4 text-sm font-semibold text-white hover:bg-[#006D3C] transition-colors whitespace-nowrap"
             >
-              Save &amp; Use Custom Endpoint
+              Use Live Endpoint
             </button>
 
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <input
                 type="text"
                 value={testCode}
-                onChange={(e) => setTestCode(e.target.value.replace(/\D/g, '').slice(0, 5))}
-                aria-label="Test 5-digit stop code"
+                onChange={(e) =>
+                  setTestCode(e.target.value.replace(/\D/g, '').slice(0, 5))
+                }
+                placeholder="04121"
+                aria-label="Test 5-digit BusStopCode"
                 className="h-11 w-24 rounded-xl border border-slate-300 bg-white px-3 text-center font-mono text-sm font-semibold text-slate-900 tabular-nums focus:border-[#008348] focus:outline-none"
+              />
+              <input
+                type="text"
+                value={testService}
+                onChange={(e) =>
+                  setTestService(e.target.value.replace(/[^A-Za-z0-9]/g, '').slice(0, 6))
+                }
+                placeholder="Svc (opt)"
+                aria-label="Optional ServiceNo filter"
+                className="h-11 w-24 rounded-xl border border-slate-300 bg-white px-3 text-center font-mono text-sm text-slate-900 focus:border-[#008348] focus:outline-none"
               />
               <button
                 type="button"
@@ -236,7 +326,7 @@ export function ApiSetupPanel({
                 className="inline-flex h-11 items-center justify-center gap-1.5 rounded-xl border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-50 transition-colors whitespace-nowrap"
               >
                 <Play className="h-3.5 w-3.5" aria-hidden="true" />
-                <span>{testing ? 'Testing…' : 'Test Connection'}</span>
+                <span>{testing ? 'Testing…' : 'Test BusArrival'}</span>
               </button>
             </div>
 
@@ -270,39 +360,34 @@ export function ApiSetupPanel({
           )}
         </form>
 
-        {/* Reference Backend Proxy Snippet */}
+        {/* Endpoint Reference */}
         <div className="p-5 sm:p-6">
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <h2 className="text-sm font-semibold text-slate-900">
-                Reference Backend Proxy Route (LTA DataMall)
-              </h2>
-              <p className="mt-0.5 text-xs text-slate-500">
-                Drop this route into your Node/Express server or serverless function when you connect your LTA DataMall key.
-              </p>
+          <h2 className="text-sm font-semibold text-slate-900">
+            Deployed Serverless Routes
+          </h2>
+          <p className="mt-0.5 text-xs text-slate-500">
+            Set <code className="font-mono text-slate-700">LTA_ACCOUNT_KEY</code> in your hosting environment secrets or local <code className="font-mono text-slate-700">.env</code> file. Keys are read strictly on the server and never sent to the browser.
+          </p>
+          <div className="mt-3 space-y-2 font-mono text-xs text-slate-700">
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-2.5">
+              <span>GET /api/health</span>
+              <span className="font-sans text-slate-500">
+                Service health &amp; LTA_ACCOUNT_KEY check
+              </span>
             </div>
-            <button
-              type="button"
-              onClick={handleCopySnippet}
-              className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors whitespace-nowrap shrink-0"
-            >
-              {copied ? (
-                <>
-                  <Check className="h-3.5 w-3.5 text-[#008348]" />
-                  Copied
-                </>
-              ) : (
-                <>
-                  <Copy className="h-3.5 w-3.5" />
-                  Copy Code
-                </>
-              )}
-            </button>
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-2.5">
+              <span>GET /api/busarrival?BusStopCode=04121</span>
+              <span className="font-sans text-slate-500">
+                All services at a stop (LTA DataMall v3)
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-2.5">
+              <span>GET /api/busarrival?BusStopCode=04121&amp;ServiceNo=7</span>
+              <span className="font-sans text-slate-500">
+                Single bus service at a stop
+              </span>
+            </div>
           </div>
-
-          <pre className="mt-3 overflow-x-auto rounded-xl border border-slate-200 bg-slate-950 p-4 font-mono text-xs leading-relaxed text-slate-100">
-            <code>{EXPRESS_PROXY_SNIPPET}</code>
-          </pre>
         </div>
       </div>
     </section>

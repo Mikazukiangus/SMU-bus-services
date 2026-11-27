@@ -45,6 +45,13 @@ export const SINGAPORE_BUS_STOPS: BusStop[] = [
     services: ['2', '7', '12', '32', '33', '51', '61', '63', '80', '130', '133', '175'],
   },
   {
+    code: '04121',
+    description: 'Stamford Court / SMU',
+    roadName: 'Stamford Rd',
+    region: 'Central & Orchard',
+    services: ['7', '14', '16', '36', '77', '106', '111', '124', '131', '147', '166', '167', '175', '190', '857'],
+  },
+  {
     code: '04167',
     description: 'City Hall Stn Exit B',
     roadName: 'North Bridge Rd',

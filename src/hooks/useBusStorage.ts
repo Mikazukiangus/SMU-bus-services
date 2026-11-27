@@ -37,8 +37,8 @@ const DEFAULT_FAVORITES: FavoriteStop[] = [
 
 const DEFAULT_API_CONFIG: ApiConfig = {
   mode: 'sample',
-  endpointTemplate: '/api/bus-arrival?BusStopCode={code}',
-  autoRefreshSeconds: 30,
+  endpointTemplate: '/api/busarrival?BusStopCode={code}',
+  autoRefreshSeconds: 20,
 };
 
 function safeReadStorage<T>(key: string, fallback: T): T {

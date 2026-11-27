@@ -266,36 +266,80 @@ export function normalizeLtaPayload(
   };
 }
 
+export interface ApiHealthStatus {
+  ok: boolean;
+  service: string;
+  endpoint: string;
+  ltaKeyConfigured: boolean;
+  refreshIntervalSeconds: number;
+  timestamp: string;
+}
+
+export async function checkApiHealth(): Promise<ApiHealthStatus> {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), 5000);
+  try {
+    const response = await fetch('/api/health', {
+      headers: { Accept: 'application/json' },
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      throw new Error(`Health check returned HTTP ${response.status}`);
+    }
+    return (await response.json()) as ApiHealthStatus;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
 /**
  * Primary arrival data fetcher.
- * Automatically routes to the user's configured LTA DataMall proxy endpoint
+ * Automatically routes to the serverless LTA DataMall v3 endpoint (/api/busarrival)
  * when `config.mode === 'custom'`, or uses the built-in offline sample provider.
  */
 export async function fetchBusArrivals(
   stopCode: string,
   config: ApiConfig,
+  serviceNo?: string,
 ): Promise<BusArrivalResponse> {
   const cleanCode = stopCode.trim();
+  const cleanService = serviceNo?.trim() ?? '';
+
   if (!isValidStopCode(cleanCode)) {
-    throw new Error('Enter a valid 5-digit Singapore bus stop code (e.g. 09048).');
+    throw new Error('Enter a valid 5-digit Singapore bus stop code (e.g. 04121).');
   }
 
   if (config.mode === 'custom' && config.endpointTemplate.trim()) {
-    const url = config.endpointTemplate
+    let url = config.endpointTemplate
       .trim()
       .replace(/\{code\}/gi, encodeURIComponent(cleanCode));
 
+    if (cleanService) {
+      const separator = url.includes('?') ? '&' : '?';
+      url = `${url}${separator}ServiceNo=${encodeURIComponent(cleanService)}`;
+    }
+
     const controller = new AbortController();
-    const timeoutId = window.setTimeout(() => controller.abort(), 8000);
+    const timeoutId = window.setTimeout(() => controller.abort(), 8500);
     try {
       const response = await fetch(url, {
         headers: { Accept: 'application/json' },
         signal: controller.signal,
       });
+      const json = (await response.json().catch(() => null)) as
+        | (RawLtaResponse & { error?: string })
+        | null;
+
       if (!response.ok) {
-        throw new Error(`Endpoint returned HTTP ${response.status}`);
+        const message =
+          json?.error || `Endpoint returned HTTP ${response.status}`;
+        throw new Error(message);
       }
-      const json = (await response.json()) as RawLtaResponse;
+
+      if (!json) {
+        throw new Error('Endpoint returned an empty response.');
+      }
+
       return normalizeLtaPayload(json, cleanCode);
     } finally {
       window.clearTimeout(timeoutId);
@@ -304,7 +348,16 @@ export async function fetchBusArrivals(
 
   // Slight realistic delay so refresh interaction feels crisp without flickering
   await new Promise((resolve) => window.setTimeout(resolve, 160));
-  return generateSampleArrivals(cleanCode);
+  const sample = generateSampleArrivals(cleanCode);
+  if (cleanService) {
+    return {
+      ...sample,
+      services: sample.services.filter(
+        (s) => s.serviceNo.toLowerCase() === cleanService.toLowerCase(),
+      ),
+    };
+  }
+  return sample;
 }
 
 export interface FormattedArrival {
